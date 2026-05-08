@@ -6,9 +6,10 @@ import { useAuth } from '../contexts/AuthContext';
 export interface TrailWaypoint {
   lat: number;
   lng: number;
-  type?: 'start' | 'end' | 'obstacle' | 'scenic' | 'waypoint';
+  type?: 'start' | 'end' | 'obstacle' | 'scenic' | 'waypoint' | 'meetup';
   segmentType?: 'main' | 'bypass' | 'leg';
   segmentId?: string;
+  isPathNode?: boolean;
 }
 
 export interface Trail {

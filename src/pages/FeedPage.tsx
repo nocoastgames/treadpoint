@@ -7,6 +7,8 @@ import { useNomadRequests } from '../hooks/useNomadRequests';
 import { useAuth } from '../contexts/AuthContext';
 import { Navigation, Clock, ThumbsUp, MapPin, Plus, Calendar, Users, Sparkles, Send } from 'lucide-react';
 import { formatDistanceToNow, format } from 'date-fns';
+import DatePicker from 'react-datepicker';
+import 'react-datepicker/dist/react-datepicker.css';
 import { searchTrailInfo } from '../lib/gemini';
 
 export default function FeedPage() {
@@ -32,10 +34,10 @@ export default function FeedPage() {
   const [showAddRide, setShowAddRide] = useState(false);
   const [rideTitle, setRideTitle] = useState('');
   const [rideTrailId, setRideTrailId] = useState('');
-  const [rideDate, setRideDate] = useState('');
+  const [rideDate, setRideDate] = useState<Date | null>(null);
   const [rideDateType, setRideDateType] = useState<'fixed'|'poll'>('fixed');
-  const [ridePollDates, setRidePollDates] = useState<string[]>([]);
-  const [newPollDate, setNewPollDate] = useState('');
+  const [ridePollDates, setRidePollDates] = useState<Date[]>([]);
+  const [newPollDate, setNewPollDate] = useState<Date | null>(null);
   const [rideVisibility, setRideVisibility] = useState<'public'|'private'>('public');
 
   const [confirmDialog, setConfirmDialog] = useState<{ message: string, onConfirm: () => void, onCancel?: () => void } | null>(null);
@@ -43,8 +45,8 @@ export default function FeedPage() {
   const { addNomadRequest, nomadRequests } = useNomadRequests();
   const [showNomad, setShowNomad] = useState(false);
   const [nomadState, setNomadState] = useState('');
-  const [nomadStart, setNomadStart] = useState('');
-  const [nomadEnd, setNomadEnd] = useState('');
+  const [nomadStart, setNomadStart] = useState<Date | null>(null);
+  const [nomadEnd, setNomadEnd] = useState<Date | null>(null);
   const [nomadMsg, setNomadMsg] = useState('');
 
   const handleAddTrail = async (e: React.FormEvent) => {
@@ -112,9 +114,9 @@ export default function FeedPage() {
       const newRideId = await addRide({
         title: rideTitle,
         trailId: rideTrailId,
-        date: rideDateType === 'fixed' ? new Date(rideDate).toISOString() : new Date().toISOString(), // Date must be an ISO string, but for poll it could be any placeholder date
+        date: rideDateType === 'fixed' ? (rideDate ? rideDate.toISOString() : new Date().toISOString()) : new Date().toISOString(),
         dateType: rideDateType,
-        dateOptions: rideDateType === 'poll' ? ridePollDates.map(d => new Date(d).toISOString()) : [],
+        dateOptions: rideDateType === 'poll' ? ridePollDates.map(d => d.toISOString()) : [],
         status: 'planned',
         visibility: rideVisibility
       });
@@ -130,14 +132,14 @@ export default function FeedPage() {
     try {
       await addNomadRequest({
         state: nomadState,
-        startDate: new Date(nomadStart).toISOString(),
-        endDate: new Date(nomadEnd).toISOString(),
+        startDate: nomadStart ? nomadStart.toISOString() : new Date().toISOString(),
+        endDate: nomadEnd ? nomadEnd.toISOString() : new Date().toISOString(),
         message: nomadMsg,
       });
       setShowNomad(false);
       setNomadState('');
-      setNomadStart('');
-      setNomadEnd('');
+      setNomadStart(null);
+      setNomadEnd(null);
       setNomadMsg('');
       alert("Nomad Request broadcasted successfully!");
     } catch (e) {
@@ -256,23 +258,36 @@ export default function FeedPage() {
               </div>
 
               {rideDateType === 'fixed' ? (
-                <input 
-                  type="datetime-local" required value={rideDate} onChange={e => setRideDate(e.target.value)}
-                  className="p-3 bg-[#0F1113] border border-gray-800 text-gray-200 rounded text-sm focus:border-gray-600 outline-none"
-                />
+                <div className="w-full">
+                  <DatePicker
+                    selected={rideDate}
+                    onChange={(date) => setRideDate(date as Date)}
+                    showTimeSelect
+                    dateFormat="Pp"
+                    placeholderText="Select Date & Time"
+                    className="w-full p-3 bg-[#0F1113] border border-gray-800 text-gray-200 rounded text-sm focus:border-gray-600 outline-none"
+                    wrapperClassName="w-full"
+                  />
+                </div>
               ) : (
                 <div className="space-y-2">
                   <div className="flex gap-2">
-                    <input 
-                      type="date" value={newPollDate} onChange={e => setNewPollDate(e.target.value)}
-                      className="flex-1 p-3 bg-[#0F1113] border border-gray-800 text-gray-200 rounded text-sm focus:border-gray-600 outline-none"
-                    />
+                    <div className="flex-1">
+                      <DatePicker
+                        selected={newPollDate}
+                        onChange={(date) => setNewPollDate(date as Date)}
+                        dateFormat="yyyy-MM-dd"
+                        placeholderText="Select Poll Date"
+                        className="w-full p-3 bg-[#0F1113] border border-gray-800 text-gray-200 rounded text-sm focus:border-gray-600 outline-none"
+                        wrapperClassName="w-full"
+                      />
+                    </div>
                     <button 
                       type="button" 
                       onClick={() => {
-                        if (newPollDate && !ridePollDates.includes(newPollDate)) {
+                        if (newPollDate && !ridePollDates.some(d => d.getTime() === newPollDate.getTime())) {
                           setRidePollDates([...ridePollDates, newPollDate]);
-                          setNewPollDate('');
+                          setNewPollDate(null);
                         }
                       }}
                       className="px-4 bg-gray-800 hover:bg-gray-700 text-white rounded text-[10px] uppercase font-bold transition-colors"
@@ -282,8 +297,8 @@ export default function FeedPage() {
                     <div className="flex flex-wrap gap-2 mt-2">
                       {ridePollDates.map((d, i) => (
                         <div key={i} className="flex items-center gap-1 bg-gray-800 px-2 py-1 rounded text-xs text-gray-300">
-                          {format(new Date(d), "MMM d, yyyy")}
-                          <button type="button" onClick={() => setRidePollDates(ridePollDates.filter(pd => pd !== d))} className="text-red-400 hover:text-red-300 ml-1">&times;</button>
+                          {format(d, "MMM d, yyyy")}
+                          <button type="button" onClick={() => setRidePollDates(ridePollDates.filter((_, idx) => idx !== i))} className="text-red-400 hover:text-red-300 ml-1">&times;</button>
                         </div>
                       ))}
                     </div>
@@ -451,11 +466,23 @@ export default function FeedPage() {
             <div className="grid grid-cols-2 gap-2">
               <div>
                 <label className="text-[10px] uppercase font-bold text-gray-500 block mb-1">From</label>
-                <input type="date" required value={nomadStart} onChange={e => setNomadStart(e.target.value)} className="w-full p-3 bg-[#0F1113] border border-gray-800 text-gray-200 rounded text-sm focus:border-gray-600 outline-none" />
+                <DatePicker
+                  selected={nomadStart}
+                  onChange={(date) => setNomadStart(date as Date)}
+                  dateFormat="yyyy-MM-dd"
+                  className="w-full p-3 bg-[#0F1113] border border-gray-800 text-gray-200 rounded text-sm focus:border-gray-600 outline-none"
+                  wrapperClassName="w-full"
+                />
               </div>
               <div>
                 <label className="text-[10px] uppercase font-bold text-gray-500 block mb-1">To</label>
-                <input type="date" required value={nomadEnd} onChange={e => setNomadEnd(e.target.value)} className="w-full p-3 bg-[#0F1113] border border-gray-800 text-gray-200 rounded text-sm focus:border-gray-600 outline-none" />
+                <DatePicker
+                  selected={nomadEnd}
+                  onChange={(date) => setNomadEnd(date as Date)}
+                  dateFormat="yyyy-MM-dd"
+                  className="w-full p-3 bg-[#0F1113] border border-gray-800 text-gray-200 rounded text-sm focus:border-gray-600 outline-none"
+                  wrapperClassName="w-full"
+                />
               </div>
             </div>
 

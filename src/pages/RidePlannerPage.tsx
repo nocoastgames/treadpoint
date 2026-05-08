@@ -7,9 +7,11 @@ import { useAuth } from '../contexts/AuthContext';
 import { useUsers } from '../hooks/useUsers';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { doc, collection, onSnapshot, addDoc, updateDoc, query, orderBy, setDoc } from 'firebase/firestore';
-import { Map, AdvancedMarker, MapMouseEvent, Polyline, useMap, InfoWindow } from '@vis.gl/react-google-maps';
-import { Calendar as CalendarIcon, Users, MapPin, Mail, Check, X, Navigation, AlertTriangle, ImageIcon, Edit3, Layers } from 'lucide-react';
+import { Map, AdvancedMarker, MapMouseEvent, Polyline, useMap, InfoWindow, useMapsLibrary } from '@vis.gl/react-google-maps';
+import { Calendar as CalendarIcon, Users, MapPin, Mail, Check, X, Navigation, AlertTriangle, ImageIcon, Edit3, Layers, Maximize, Minimize } from 'lucide-react';
 import { format } from 'date-fns';
+import DatePicker from 'react-datepicker';
+import 'react-datepicker/dist/react-datepicker.css';
 import { identifyTrailFromWaypoints } from '../lib/gemini';
 
 interface Invite {
@@ -44,15 +46,17 @@ export default function RidePlannerPage() {
   const { users, giveKarma } = useUsers();
   
   // Potential dates to poll for
-  const [pollDate, setPollDate] = useState('');
+  const [pollDate, setPollDate] = useState<Date | null>(null);
   
   // Route Builder state
   const [routeBuilderMode, setRouteBuilderMode] = useState(false);
   const [routeWaypoints, setRouteWaypoints] = useState<import('../hooks/useTrails').TrailWaypoint[]>([]);
   const [routeBuilderSegmentType, setRouteBuilderSegmentType] = useState<'main' | 'bypass' | 'leg'>('main');
-  const [routeBuilderPointType, setRouteBuilderPointType] = useState<'waypoint' | 'start' | 'end' | 'obstacle' | 'scenic'>('waypoint');
+  const [routeBuilderPointType, setRouteBuilderPointType] = useState<'waypoint' | 'start' | 'end' | 'obstacle' | 'scenic' | 'meetup'>('waypoint');
   const [routeBuilderSegmentId, setRouteBuilderSegmentId] = useState('main-1');
+  const [snapToRoad, setSnapToRoad] = useState(true);
   const [isIdentifying, setIsIdentifying] = useState(false);
+  const routesLib = useMapsLibrary('routes');
   
   const [selectedWaypoint, setSelectedWaypoint] = useState<{
     list: 'saved' | 'route';
@@ -72,7 +76,7 @@ export default function RidePlannerPage() {
   // Editing state
   const [isEditingRide, setIsEditingRide] = useState(false);
   const [editRideTitle, setEditRideTitle] = useState('');
-  const [editRideDate, setEditRideDate] = useState('');
+  const [editRideDate, setEditRideDate] = useState<Date | null>(null);
   const [editRideStatus, setEditRideStatus] = useState<'planned'|'active'|'completed'|'cancelled'>('planned');
 
   // Map state
@@ -80,6 +84,7 @@ export default function RidePlannerPage() {
   
   const map = useMap('RIDE_PLANNER_MAP');
   const [hasCentered, setHasCentered] = useState(false);
+  const [isMapExpanded, setIsMapExpanded] = useState(false);
 
   useEffect(() => {
     if (trail && map && !hasCentered) {
@@ -123,6 +128,16 @@ export default function RidePlannerPage() {
       if (myAvail) setSelectedDates(myAvail.dates);
     }
   }, [availabilities, user]);
+
+  // Auto Save
+  useEffect(() => {
+    if (routeBuilderMode && trail && routeWaypoints.length > 0) {
+      const timer = setTimeout(() => {
+        updateTrail(trail.id, { waypoints: routeWaypoints });
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [routeWaypoints, routeBuilderMode, trail?.id]);
 
   if (!ride) {
     return <div className="p-8 text-center text-gray-400">Loading ride details...</div>;
@@ -209,21 +224,59 @@ export default function RidePlannerPage() {
   const handleAddPollDate = (e: React.FormEvent) => {
     e.preventDefault();
     if (pollDate) {
-      toggleAvailability(pollDate);
-      setPollDate('');
+      toggleAvailability(format(pollDate, "yyyy-MM-dd"));
+      setPollDate(null);
     }
   };
   
-  const onMapClick = (e: MapMouseEvent) => {
+  const onMapClick = async (e: MapMouseEvent) => {
     if (e.detail.latLng) {
       if (routeBuilderMode) {
-        setRouteWaypoints(prev => [...prev, { 
-          lat: e.detail.latLng!.lat, 
-          lng: e.detail.latLng!.lng, 
+        const newWaypoint: import('../hooks/useTrails').TrailWaypoint = { 
+          lat: e.detail.latLng.lat, 
+          lng: e.detail.latLng.lng, 
           type: routeBuilderPointType,
           segmentType: routeBuilderSegmentType,
           segmentId: routeBuilderSegmentId
-        }]);
+        };
+        
+        let pathNodes: import('../hooks/useTrails').TrailWaypoint[] = [];
+        if (snapToRoad && routesLib) {
+          // Since findLastIndex is not broadly supported in some older environments, let's just loop backwards
+          let lastIndex = -1;
+          for (let i = routeWaypoints.length - 1; i >= 0; i--) {
+            if (routeWaypoints[i].segmentId === routeBuilderSegmentId && !routeWaypoints[i].isPathNode) {
+              lastIndex = i;
+              break;
+            }
+          }
+          if (lastIndex !== -1) {
+            const origin = routeWaypoints[lastIndex];
+            try {
+              const directionsService = new routesLib.DirectionsService();
+              const result = await directionsService.route({
+                origin: { lat: origin.lat, lng: origin.lng },
+                destination: { lat: newWaypoint.lat, lng: newWaypoint.lng },
+                travelMode: 'DRIVING' as any
+              });
+              if (result.routes && result.routes.length > 0) {
+                const overviewPath = result.routes[0].overview_path;
+                overviewPath.forEach((ll: any) => {
+                  pathNodes.push({
+                    lat: ll.lat(),
+                    lng: ll.lng(),
+                    segmentId: routeBuilderSegmentId,
+                    segmentType: routeBuilderSegmentType,
+                    isPathNode: true
+                  });
+                });
+              }
+            } catch (error) {
+              console.error("Error computing route", error);
+            }
+          }
+        }
+        setRouteWaypoints(prev => [...prev, ...pathNodes, newWaypoint]);
       } else {
         setReportLat(e.detail.latLng.lat);
         setReportLng(e.detail.latLng.lng);
@@ -282,7 +335,7 @@ export default function RidePlannerPage() {
     try {
       await updateRide(id, {
         title: editRideTitle,
-        date: editRideDate ? new Date(editRideDate).toISOString() : ride.date,
+        date: editRideDate ? editRideDate.toISOString() : ride.date,
         dateType: editRideDate ? 'fixed' : ride.dateType,
         status: editRideStatus
       });
@@ -296,8 +349,8 @@ export default function RidePlannerPage() {
   const renderTrailLines = (waypoints: import('../hooks/useTrails').TrailWaypoint[] | undefined) => {
     if (!waypoints || waypoints.length === 0) return null;
     
-    // Group waypoints by segmentId. If missing segmentId, group as 'default'
-    const grouped = waypoints.reduce((acc, wp) => {
+    // Group waypoints by segmentId, excluding meetup points
+    const grouped = waypoints.filter(wp => wp.type !== 'meetup').reduce((acc, wp) => {
       const segId = wp.segmentId || 'main-1';
       if (!acc[segId]) acc[segId] = [];
       acc[segId].push(wp);
@@ -317,26 +370,62 @@ export default function RidePlannerPage() {
   const renderTrailMarkers = (waypoints: import('../hooks/useTrails').TrailWaypoint[] | undefined, prefix: 'saved' | 'route') => {
     if (!waypoints) return null;
     return waypoints.map((wp, i) => {
+      if (wp.isPathNode) return null;
+
       const isMain = wp.segmentType === 'main';
       let bgColor = isMain ? 'bg-red-500' : 'bg-green-500';
       
       // Override colors by point type
       if (wp.type === 'start') bgColor = 'bg-blue-500 text-white';
+      if (wp.type === 'meetup') bgColor = 'bg-cyan-400 text-black';
       if (wp.type === 'end') bgColor = 'bg-black text-white';
       if (wp.type === 'obstacle') bgColor = 'bg-yellow-500';
       if (wp.type === 'scenic') bgColor = 'bg-purple-500';
+
+      const isDraggable = prefix === 'route' && routeBuilderMode;
 
       return (
         <AdvancedMarker 
           key={`${prefix}-${i}`} 
           position={{ lat: wp.lat, lng: wp.lng }}
           onClick={() => setSelectedWaypoint({ list: prefix, index: i, waypoint: wp })}
+          draggable={isDraggable}
+          onDragEnd={(e) => {
+            if (isDraggable && e.latLng) {
+              const newWaypoints = [...routeWaypoints];
+              
+              let startIdx = i;
+              while(startIdx > 0 && newWaypoints[startIdx - 1]?.isPathNode) {
+                  startIdx--;
+              }
+              let endIdx = i;
+              while(endIdx < newWaypoints.length - 1 && newWaypoints[endIdx + 1]?.isPathNode) {
+                  endIdx++;
+              }
+              
+              const countToRemoveBefore = i - startIdx;
+              const countToRemoveAfter = endIdx - i;
+              
+              newWaypoints[i] = { ...newWaypoints[i], lat: e.latLng.lat(), lng: e.latLng.lng() };
+              
+              if (countToRemoveAfter > 0) {
+                  newWaypoints.splice(i + 1, countToRemoveAfter);
+              }
+              if (countToRemoveBefore > 0) {
+                  newWaypoints.splice(startIdx, countToRemoveBefore);
+              }
+              
+              setRouteWaypoints(newWaypoints);
+            }
+          }}
         >
           <div className={`w-3 h-3 rounded-full border-2 border-white shadow-lg cursor-pointer hover:scale-125 transition-transform ${bgColor}`} title={`${wp.type} (${wp.segmentType})`} />
         </AdvancedMarker>
       )
     });
   };
+
+  const activeWaypoints = routeBuilderMode ? routeWaypoints : trail?.waypoints || [];
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 relative">
@@ -380,7 +469,7 @@ export default function RidePlannerPage() {
                 <button 
                   onClick={() => {
                     setEditRideTitle(ride.title);
-                    setEditRideDate(ride.dateType === 'poll' ? '' : format(new Date(ride.date), "yyyy-MM-dd'T'HH:mm"));
+                    setEditRideDate(ride.dateType === 'poll' ? null : new Date(ride.date));
                     setEditRideStatus(ride.status);
                     setIsEditingRide(true);
                   }}
@@ -423,11 +512,14 @@ export default function RidePlannerPage() {
                 className="p-2 bg-[#1C2025] border border-gray-700 rounded text-sm text-gray-200 outline-none" 
                 placeholder="Ride Title"
               />
-              <input 
-                type="datetime-local" 
-                value={editRideDate} 
-                onChange={(e) => setEditRideDate(e.target.value)} 
-                className="p-2 bg-[#1C2025] border border-gray-700 rounded text-sm text-gray-200 outline-none" 
+              <DatePicker
+                selected={editRideDate}
+                onChange={(date) => setEditRideDate(date as Date)}
+                showTimeSelect
+                dateFormat="Pp"
+                placeholderText="Select Date & Time"
+                className="p-2 bg-[#1C2025] border border-gray-700 rounded text-sm text-gray-200 outline-none w-full"
+                wrapperClassName="w-full"
               />
               <select 
                 value={editRideStatus} 
@@ -453,8 +545,8 @@ export default function RidePlannerPage() {
           )}
         </div>
 
-        <div className="h-[500px] bg-[#0B0D0E] border border-gray-800 rounded relative overflow-hidden">
-          <Map defaultZoom={4} defaultCenter={{ lat: 39.8283, lng: -98.5795 }} mapId="RIDE_PLANNER_MAP" mapTypeId={mapTypeId} disableDefaultUI={false} gestureHandling={'greedy'} onClick={onMapClick}>
+        <div className={isMapExpanded ? "fixed inset-0 z-50 bg-[#0B0D0E] flex flex-col" : "h-[500px] bg-[#0B0D0E] border border-gray-800 rounded relative overflow-hidden"}>
+          <Map defaultZoom={4} defaultCenter={{ lat: 39.8283, lng: -98.5795 }} mapId="RIDE_PLANNER_MAP" mapTypeId={mapTypeId} disableDefaultUI={false} gestureHandling={'greedy'} onClick={onMapClick} className={isMapExpanded ? "flex-1" : ""}>
             {trail && (
               <AdvancedMarker position={{ lat: trail.lat, lng: trail.lng }}>
                 <div className="w-6 h-6 bg-orange-500 rounded flex items-center justify-center border-2 border-white shadow-xl">
@@ -463,12 +555,9 @@ export default function RidePlannerPage() {
               </AdvancedMarker>
             )}
             
-            {renderTrailLines(trail?.waypoints)}
-            {renderTrailMarkers(trail?.waypoints, 'saved')}
-
-            {routeBuilderMode && renderTrailLines(routeWaypoints)}
-            {routeBuilderMode && renderTrailMarkers(routeWaypoints, 'route')}
-
+            {renderTrailLines(activeWaypoints)}
+            {renderTrailMarkers(activeWaypoints, routeBuilderMode ? 'route' : 'saved')}
+            
             {selectedWaypoint && (user?.uid === trail?.creatorId || user?.uid === ride.organizerId || routeBuilderMode) && (
               <InfoWindow
                 position={{ lat: selectedWaypoint.waypoint.lat, lng: selectedWaypoint.waypoint.lng }}
@@ -488,6 +577,7 @@ export default function RidePlannerPage() {
                         className="w-full border border-gray-300 rounded p-1 text-sm bg-white outline-none"
                       >
                         <option value="start">Start</option>
+                        <option value="meetup">Meetup</option>
                         <option value="end">End</option>
                         <option value="waypoint">Waypoint</option>
                         <option value="obstacle">Obstacle</option>
@@ -541,15 +631,26 @@ export default function RidePlannerPage() {
                       </button>
                       <button 
                         onClick={() => {
-                          if (selectedWaypoint.list === 'saved' && trail) {
-                            const newWaypoints = [...(trail.waypoints || [])];
-                            newWaypoints.splice(selectedWaypoint.index, 1);
-                            updateTrail(trail.id, { waypoints: newWaypoints });
-                          } else if (selectedWaypoint.list === 'route') {
-                            const newWaypoints = [...routeWaypoints];
-                            newWaypoints.splice(selectedWaypoint.index, 1);
-                            setRouteWaypoints(newWaypoints);
+                          const listType = selectedWaypoint.list;
+                          const wpts = listType === 'saved' && trail ? [...(trail.waypoints || [])] : [...routeWaypoints];
+                          
+                          let startIdx = selectedWaypoint.index;
+                          while(startIdx > 0 && wpts[startIdx - 1]?.isPathNode) {
+                              startIdx--;
                           }
+                          let endIdx = selectedWaypoint.index;
+                          while(endIdx < wpts.length - 1 && wpts[endIdx + 1]?.isPathNode) {
+                              endIdx++;
+                          }
+
+                          wpts.splice(startIdx, endIdx - startIdx + 1);
+
+                          if (listType === 'saved' && trail) {
+                            updateTrail(trail.id, { waypoints: wpts });
+                          } else if (listType === 'route') {
+                            setRouteWaypoints(wpts);
+                          }
+                          
                           setSelectedWaypoint(null);
                         }}
                         className="flex-1 bg-red-600 text-white text-[10px] uppercase font-bold tracking-widest py-1.5 rounded hover:bg-red-700"
@@ -583,46 +684,73 @@ export default function RidePlannerPage() {
               </AdvancedMarker>
             )}
           </Map>
-          <div className="absolute top-4 left-4 bg-[#16191D]/90 backdrop-blur p-4 rounded border border-gray-700 w-72">
-          <div className="flex items-center gap-2 mb-2">
-            <h3 className="text-[10px] font-bold uppercase tracking-widest text-gray-400">Interactive Map</h3>
-            <div className="flex bg-[#1C2025] rounded border border-gray-700 overflow-hidden">
-              <button onClick={() => setMapTypeId('terrain')} className={`px-2 py-1 text-[10px] uppercase font-bold tracking-widest transition-colors ${mapTypeId === 'terrain' ? 'bg-orange-500 text-black' : 'text-gray-400 hover:text-white'}`}>Terrain</button>
-              <button onClick={() => setMapTypeId('satellite')} className={`px-2 py-1 text-[10px] uppercase font-bold tracking-widest transition-colors border-l border-r border-gray-700 ${mapTypeId === 'satellite' ? 'bg-orange-500 text-black' : 'text-gray-400 hover:text-white'}`}>Satellite</button>
-              <button onClick={() => setMapTypeId('hybrid')} className={`px-2 py-1 text-[10px] uppercase font-bold tracking-widest transition-colors ${mapTypeId === 'hybrid' ? 'bg-orange-500 text-black' : 'text-gray-400 hover:text-white'}`}>Hybrid</button>
+          <div className="absolute bottom-4 left-4 flex flex-col gap-2 z-40">
+            <div className="bg-[#16191D]/90 backdrop-blur p-4 rounded border border-gray-700 w-72">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-[10px] font-bold uppercase tracking-widest text-gray-400">Interactive Map</h3>
+                <button
+                  onClick={() => setIsMapExpanded(!isMapExpanded)}
+                  className="text-[10px] text-orange-500 hover:text-orange-400 uppercase font-bold tracking-widest flex items-center gap-1"
+                  title={isMapExpanded ? "Restore map" : "Expand map"}
+                >
+                  {isMapExpanded ? <Minimize className="w-3 h-3" /> : <Maximize className="w-3 h-3" />}
+                  {isMapExpanded ? 'Restore' : 'Expand'}
+                </button>
+              </div>
+              <div className="flex bg-[#1C2025] rounded border border-gray-700 overflow-hidden mb-2">
+                <button onClick={() => setMapTypeId('terrain')} className={`flex-1 py-1 text-[10px] uppercase font-bold tracking-widest transition-colors ${mapTypeId === 'terrain' ? 'bg-orange-500 text-black' : 'text-gray-400 hover:text-white'}`}>Terrain</button>
+                <button onClick={() => setMapTypeId('satellite')} className={`flex-1 py-1 text-[10px] uppercase font-bold tracking-widest transition-colors border-l border-r border-gray-700 ${mapTypeId === 'satellite' ? 'bg-orange-500 text-black' : 'text-gray-400 hover:text-white'}`}>Satellite</button>
+                <button onClick={() => setMapTypeId('hybrid')} className={`flex-1 py-1 text-[10px] uppercase font-bold tracking-widest transition-colors ${mapTypeId === 'hybrid' ? 'bg-orange-500 text-black' : 'text-gray-400 hover:text-white'}`}>Hybrid</button>
+              </div>
+              <p className="text-xs text-gray-500 mb-4">View the selected trail and any reported waypoints. Click the map to drop a new pin.</p>
+              {user?.uid === ride.organizerId && (
+                <p className="text-[10px] text-orange-500 font-bold uppercase tracking-wider">You are the organizer</p>
+              )}
             </div>
-          </div>
-            <p className="text-xs text-gray-500 mb-4">View the selected trail and any reported waypoints. Click the map to drop a new pin.</p>
-            {user?.uid === ride.organizerId && (
-              <p className="text-[10px] text-orange-500 font-bold uppercase tracking-wider">You are the organizer</p>
-            )}
           </div>
 
           <div className="absolute top-4 right-4 flex flex-col gap-2 z-40">
+            {isMapExpanded && (
+              <button
+                onClick={() => setIsMapExpanded(false)}
+                className="px-4 py-2 text-[10px] uppercase font-bold tracking-widest rounded transition-colors bg-[#1C2025] text-gray-300 border border-gray-700 hover:border-gray-500 mb-2 flex items-center justify-center gap-2"
+              >
+                <Minimize className="w-3 h-3" />
+                Restore Map
+              </button>
+            )}
             <button 
               onClick={() => {
+                if (!routeBuilderMode) {
+                  setRouteWaypoints(trail?.waypoints || []);
+                }
                 setRouteBuilderMode(!routeBuilderMode);
-                if (routeBuilderMode) setRouteWaypoints([]);
               }}
               className={`px-4 py-2 text-[10px] uppercase font-bold tracking-widest rounded transition-colors border ${routeBuilderMode ? 'bg-orange-500 text-black border-transparent hover:bg-orange-600' : 'bg-[#1C2025] text-gray-300 border-gray-700 hover:border-gray-500'}`}
             >
-              {routeBuilderMode ? 'Cancel Building' : 'Build Route'}
+              {routeBuilderMode ? 'Done Building' : 'Build Route'}
             </button>
-            {(user?.uid === trail?.creatorId || user?.uid === ride.organizerId) && (
+            {routeBuilderMode && (
               <button 
-                onClick={clearAllRouteData}
+                onClick={() => setRouteWaypoints([])}
                 className="px-4 py-2 text-[10px] uppercase font-bold tracking-widest rounded transition-colors bg-red-900/50 text-red-400 border border-red-900 hover:bg-red-900/80"
               >
-                Clear Route Map
+                Clear Route
               </button>
             )}
           </div>
 
           {routeBuilderMode && (
-            <div className="absolute bottom-4 left-4 bg-[#16191D]/90 backdrop-blur p-4 rounded border border-gray-700 w-80 z-40">
-              <h3 className="text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-2">Build Route</h3>
+            <div className="absolute top-4 left-4 bg-[#16191D]/90 backdrop-blur p-4 rounded border border-gray-700 w-80 z-40 flex flex-col gap-4">
+              <div className="flex justify-between items-center">
+                <h3 className="text-[10px] font-bold uppercase tracking-widest text-gray-400">Build Route</h3>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={snapToRoad} onChange={e => setSnapToRoad(e.target.checked)} className="accent-orange-500" />
+                  <span className="text-[10px] font-bold uppercase tracking-widest text-gray-400">Snap</span>
+                </label>
+              </div>
               
-              <div className="flex gap-2 mb-2">
+              <div className="flex gap-2">
                 <select 
                   value={routeBuilderSegmentType}
                   onChange={(e) => setRouteBuilderSegmentType(e.target.value as any)}
@@ -641,8 +769,8 @@ export default function RidePlannerPage() {
                 />
               </div>
 
-              <div className="grid grid-cols-3 gap-1 mb-4">
-                {['start', 'end', 'waypoint', 'obstacle', 'scenic'].map(type => (
+              <div className="grid grid-cols-3 gap-1">
+                {['start', 'meetup', 'end', 'waypoint', 'obstacle', 'scenic'].map(type => (
                   <button
                     key={type}
                     onClick={() => setRouteBuilderPointType(type as any)}
@@ -651,26 +779,14 @@ export default function RidePlannerPage() {
                 ))}
               </div>
 
-              <p className="text-xs text-gray-500 mb-4">{routeWaypoints.length} waypoints dropped.</p>
+              <p className="text-xs text-gray-500">{routeWaypoints.length} waypoints dropped. Saved automatically.</p>
+              
               <button 
                 onClick={handleUseAIToIdentifyTrail}
                 disabled={isIdentifying || routeWaypoints.length < 2}
                 className="w-full py-2 bg-[#1C2025] hover:bg-orange-500/10 border border-gray-700 hover:border-orange-500/50 text-orange-500 rounded text-[10px] uppercase font-bold tracking-widest transition-colors disabled:opacity-50"
               >
                 {isIdentifying ? 'Identifying...' : 'Identify Base Trail'}
-              </button>
-              <button 
-                onClick={async () => {
-                   if (!trail) return;
-                   const merged = [...(trail.waypoints || []), ...routeWaypoints];
-                   await updateTrail(trail.id, { waypoints: merged });
-                   setRouteBuilderMode(false);
-                   setRouteWaypoints([]);
-                }}
-                disabled={routeWaypoints.length === 0}
-                className="w-full mt-2 py-2 bg-gray-800 hover:bg-gray-700 text-gray-200 rounded text-[10px] uppercase font-bold tracking-widest transition-colors disabled:opacity-50"
-              >
-                Save {routeWaypoints.length} Waypoints
               </button>
             </div>
           )}
@@ -761,11 +877,13 @@ export default function RidePlannerPage() {
           </div>
 
           <form onSubmit={handleAddPollDate} className="flex gap-2">
-            <input 
-              type="date"
-              value={pollDate}
-              onChange={e => setPollDate(e.target.value)}
-              className="flex-1 p-2 bg-[#0F1113] border border-gray-800 text-gray-200 rounded text-sm focus:border-gray-600 outline-none"
+            <DatePicker
+              selected={pollDate}
+              onChange={(date) => setPollDate(date as Date)}
+              dateFormat="yyyy-MM-dd"
+              placeholderText="Select Poll Date"
+              className="flex-1 p-2 bg-[#0F1113] border border-gray-800 text-gray-200 rounded text-sm focus:border-gray-600 outline-none w-full"
+              wrapperClassName="flex-1"
             />
             <button type="submit" className="bg-gray-800 hover:bg-gray-700 text-gray-200 px-3 py-2 rounded text-[10px] uppercase font-bold tracking-widest transition-colors border border-gray-700">
               Add Date
