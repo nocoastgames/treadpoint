@@ -1,0 +1,168 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() { return request.auth != null; }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    function isVerifiedEmail() { return true; } // Bypassing for now since we're using simple login
+
+    // Users
+    function isValidUser(data) {
+      return data.keys().hasAll(['email', 'role', 'createdAt']) &&
+             data.email is string && data.email.size() <= 100 &&
+             data.role is string && data.role in ['basic', 'advanced'] &&
+             (data.get('karma', 0) is number) &&
+             data.createdAt is string; // Using ISO string for simplicity
+    }
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && request.auth.uid == userId && isValidUser(incoming()) && 
+                    ((request.auth.token.email == 'mrenegar@gmail.com' && incoming().role == 'advanced') || incoming().role == 'basic');
+      allow update: if isSignedIn() && 
+                    (
+                      (request.auth.uid == userId && incoming().diff(existing()).affectedKeys().hasOnly(['displayName']) && incoming().displayName is string) ||
+                      (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'advanced' && incoming().diff(existing()).affectedKeys().hasOnly(['karma']) && incoming().karma is number)
+                    );
+      
+      match /favorites/{favoriteId} {
+        allow read: if isSignedIn() && request.auth.uid == userId;
+        allow create: if isSignedIn() && request.auth.uid == userId && 
+                      incoming().keys().hasAll(['trailId', 'addedAt']) &&
+                      incoming().trailId is string &&
+                      incoming().addedAt is string &&
+                      exists(/databases/$(database)/documents/trails/$(incoming().trailId));
+        allow delete: if isSignedIn() && request.auth.uid == userId;
+      }
+    }
+
+    // Trails
+    function isValidTrail(data) {
+      return data.keys().hasAll(['name', 'description', 'difficulty', 'createdAt', 'creatorId']) &&
+             data.name is string && data.name.size() <= 100 &&
+             data.description is string && data.description.size() <= 1000 &&
+             data.difficulty is string && data.difficulty in ['easy', 'moderate', 'hard', 'extreme'] &&
+             data.get('lat', 0) is number && data.get('lng', 0) is number &&
+             (data.get('waypoints', []) is list) &&
+             (data.get('state', '') is string) &&
+             (data.get('pattern', '') is string) &&
+             (data.get('visibility', '') is string) &&
+             (data.get('ratingCount', 0) is number) &&
+             (data.get('ratingTotal', 0) is number) &&
+             data.createdAt is string &&
+             data.creatorId == request.auth.uid;
+    }
+    match /trails/{trailId} {
+      // Anyone signed in can read
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(trailId) && isValidTrail(incoming());
+      allow update: if isSignedIn() && (existing().creatorId == request.auth.uid || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'advanced') && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'description', 'difficulty', 'lat', 'lng', 'waypoints', 'state', 'pattern', 'visibility', 'ratingCount', 'ratingTotal']);
+      allow delete: if isSignedIn() && (existing().creatorId == request.auth.uid || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'advanced');
+    }
+
+    // Rides
+    function isValidRide(data) {
+      return data.keys().hasAll(['trailId', 'organizerId', 'title', 'date', 'status', 'createdAt']) &&
+             data.title is string && data.title.size() <= 100 &&
+             data.trailId is string && data.organizerId == request.auth.uid &&
+             data.date is string &&
+             (data.get('dateType', 'fixed') is string) &&
+             (data.get('dateOptions', []) is list) &&
+             data.status is string && data.status in ['planned', 'active', 'completed', 'cancelled'] &&
+             (data.get('visibility', '') is string) &&
+             (data.get('coOrganizerIds', []) is list) &&
+             data.createdAt is string; // timestamp string
+    }
+    match /rides/{rideId} {
+      allow read: if isSignedIn();
+      // Must be advanced user to create rides! We verify role in user doc.
+      allow create: if isSignedIn() && isValidId(rideId) && isValidRide(incoming()) &&
+                    get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'advanced' &&
+                    exists(/databases/$(database)/documents/trails/$(incoming().trailId));
+      allow update: if isSignedIn() && (existing().organizerId == request.auth.uid || request.auth.uid in existing().get('coOrganizerIds', [])) && 
+                    incoming().diff(existing()).affectedKeys().hasOnly(['status', 'title', 'date', 'visibility', 'coOrganizerIds', 'dateType', 'dateOptions']) &&
+                    incoming().status in ['planned', 'active', 'completed', 'cancelled'];
+      allow delete: if isSignedIn() && (existing().organizerId == request.auth.uid || request.auth.uid in existing().get('coOrganizerIds', []));
+
+      match /participants/{participantId} {
+        allow read: if isSignedIn();
+        allow create: if isSignedIn() && participantId == request.auth.uid && 
+                      incoming().keys().hasAll(['userId', 'joinedAt']) &&
+                      incoming().userId == request.auth.uid &&
+                      (incoming().get('status', 'approved') in ['approved', 'pending']) &&
+                      incoming().joinedAt is string;
+        allow update: if isSignedIn() && (get(/databases/$(database)/documents/rides/$(rideId)).data.organizerId == request.auth.uid || request.auth.uid in get(/databases/$(database)/documents/rides/$(rideId)).data.get('coOrganizerIds', [])) && incoming().diff(existing()).affectedKeys().hasOnly(['status']) && incoming().status in ['pending', 'approved'];
+        allow delete: if isSignedIn() && (participantId == request.auth.uid || get(/databases/$(database)/documents/rides/$(rideId)).data.organizerId == request.auth.uid || request.auth.uid in get(/databases/$(database)/documents/rides/$(rideId)).data.get('coOrganizerIds', []));
+      }
+
+      match /invites/{inviteId} {
+        allow read: if isSignedIn();
+        allow create: if isSignedIn() && 
+                      incoming().keys().hasAll(['email', 'status', 'invitedById']) &&
+                      incoming().email is string &&
+                      incoming().status == 'pending' &&
+                      incoming().invitedById == request.auth.uid;
+        allow update: if isSignedIn() && 
+                      incoming().diff(existing()).affectedKeys().hasOnly(['status']) &&
+                      incoming().status in ['pending', 'accepted', 'declined'];
+      }
+
+      match /availabilities/{availabilityId} {
+        allow read: if isSignedIn();
+        allow create: if isSignedIn() && availabilityId == request.auth.uid &&
+                      incoming().keys().hasAll(['dates', 'userId']) &&
+                      incoming().userId == request.auth.uid &&
+                      incoming().dates is list;
+        allow update: if isSignedIn() && availabilityId == request.auth.uid &&
+                      incoming().diff(existing()).affectedKeys().hasOnly(['dates']) &&
+                      incoming().dates is list;
+      }
+    }
+
+    match /nomadRequests/{requestId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(requestId) &&
+                    incoming().keys().hasAll(['userId', 'startDate', 'endDate', 'state', 'message', 'createdAt']) &&
+                    incoming().userId == request.auth.uid &&
+                    incoming().startDate is string &&
+                    incoming().endDate is string &&
+                    incoming().state is string &&
+                    incoming().message is string &&
+                    incoming().createdAt is string;
+      allow delete: if isSignedIn() && existing().userId == request.auth.uid;
+    }
+
+    // Reports
+    function isValidReport(data) {
+      return data.keys().hasAll(['trailId', 'authorId', 'type', 'description', 'lat', 'lng', 'upvotes', 'createdAt']) &&
+             data.trailId is string && data.authorId == request.auth.uid &&
+             data.type is string && data.type in ['condition', 'waypoint', 'hazard', 'scenic'] &&
+             data.description is string && data.description.size() <= 500 &&
+             data.lat is number && data.lng is number &&
+             data.upvotes == 0 &&
+             data.createdAt is string;
+    }
+    match /reports/{reportId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(reportId) && isValidReport(incoming()) &&
+                    exists(/databases/$(database)/documents/trails/$(incoming().trailId));
+      allow update: if isSignedIn() && incoming().diff(existing()).affectedKeys().hasOnly(['upvotes']) &&
+                    (incoming().upvotes == existing().upvotes + 1 || incoming().upvotes == existing().upvotes - 1);
+      allow delete: if isSignedIn() && (existing().authorId == request.auth.uid || get(/databases/$(database)/documents/trails/$(existing().trailId)).data.creatorId == request.auth.uid);
+
+      match /upvotes/{upvoteId} {
+        allow read: if isSignedIn();
+        allow create: if isSignedIn() && upvoteId == request.auth.uid &&
+                      incoming().keys().hasAll(['userId', 'createdAt']) &&
+                      incoming().userId == request.auth.uid &&
+                      incoming().createdAt is string;
+        allow delete: if isSignedIn() && upvoteId == request.auth.uid;
+      }
+    }
+  }
+}

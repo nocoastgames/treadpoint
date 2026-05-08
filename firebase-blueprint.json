@@ -1,0 +1,119 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "A user of the 4x4 Trail App.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "role": { "type": "string", "enum": ["basic", "advanced"], "description": "User role determining ride planning ability." },
+        "createdAt": { "type": "string", "description": "Timestamp" }
+      },
+      "required": ["email", "role", "createdAt"]
+    },
+    "UserFavorite": {
+      "title": "User Favorite",
+      "description": "A favorite trail marked by the user.",
+      "type": "object",
+      "properties": {
+        "trailId": { "type": "string" },
+        "addedAt": { "type": "string", "description": "Timestamp" }
+      },
+      "required": ["trailId", "addedAt"]
+    },
+    "Trail": {
+      "title": "Trail",
+      "description": "A 4x4 trail.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "difficulty": { "type": "string", "enum": ["easy", "moderate", "hard", "extreme"] },
+        "createdAt": { "type": "string", "description": "Timestamp" },
+        "creatorId": { "type": "string" }
+      },
+      "required": ["name", "difficulty", "createdAt", "creatorId"]
+    },
+    "Ride": {
+      "title": "Ride",
+      "description": "An organized group ride on a trail.",
+      "type": "object",
+      "properties": {
+        "trailId": { "type": "string" },
+        "organizerId": { "type": "string" },
+        "title": { "type": "string" },
+        "date": { "type": "string", "description": "Timestamp" },
+        "status": { "type": "string", "enum": ["planned", "active", "completed", "cancelled"] },
+        "createdAt": { "type": "string", "description": "Timestamp" }
+      },
+      "required": ["trailId", "organizerId", "title", "date", "status", "createdAt"]
+    },
+    "RideParticipant": {
+      "title": "Ride Participant",
+      "description": "A user participating in a ride.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "joinedAt": { "type": "string", "description": "Timestamp" }
+      },
+      "required": ["userId", "joinedAt"]
+    },
+    "Report": {
+      "title": "Report",
+      "description": "A trail condition or waypoint report.",
+      "type": "object",
+      "properties": {
+        "trailId": { "type": "string" },
+        "authorId": { "type": "string" },
+        "type": { "type": "string", "enum": ["condition", "waypoint", "hazard", "scenic"] },
+        "description": { "type": "string" },
+        "lat": { "type": "number" },
+        "lng": { "type": "number" },
+        "upvotes": { "type": "number" },
+        "createdAt": { "type": "string", "description": "Timestamp" }
+      },
+      "required": ["trailId", "authorId", "type", "lat", "lng", "upvotes", "createdAt"]
+    },
+    "ReportUpvote": {
+      "title": "Report Upvote",
+      "description": "A vote by a user on a report.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "createdAt": { "type": "string", "description": "Timestamp" }
+      },
+      "required": ["userId", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User profiles."
+    },
+    "/users/{userId}/favorites/{favoriteId}": {
+      "schema": { "$ref": "#/entities/UserFavorite" },
+      "description": "Trails marked as favorite by the user."
+    },
+    "/trails/{trailId}": {
+      "schema": { "$ref": "#/entities/Trail" },
+      "description": "Global list of trails."
+    },
+    "/rides/{rideId}": {
+      "schema": { "$ref": "#/entities/Ride" },
+      "description": "Global list of organized rides."
+    },
+    "/rides/{rideId}/participants/{participantId}": {
+      "schema": { "$ref": "#/entities/RideParticipant" },
+      "description": "Users participating in a ride."
+    },
+    "/reports/{reportId}": {
+      "schema": { "$ref": "#/entities/Report" },
+      "description": "Condition or waypoint reports for trails."
+    },
+    "/reports/{reportId}/upvotes/{upvoteId}": {
+      "schema": { "$ref": "#/entities/ReportUpvote" },
+      "description": "Individual upvotes on a report ensuring users can only vote once."
+    }
+  }
+}

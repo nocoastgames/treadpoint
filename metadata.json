@@ -1,0 +1,8 @@
+{
+  "name": "TreadPoint 4x4",
+  "description": "A 4x4 trail tracking and social app. Organize rides, report conditions, and navigate trails.",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": []
+}
