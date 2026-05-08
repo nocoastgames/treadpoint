@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route } from 'react-router';
+import { HashRouter, Routes, Route } from 'react-router';
 import { AuthProvider } from './contexts/AuthContext';
 import { APIProvider } from '@vis.gl/react-google-maps';
 import Layout from './components/ui/Layout';
@@ -13,7 +13,7 @@ export default function App() {
   return (
     <AuthProvider>
       <APIProvider apiKey={apiKey}>
-        <BrowserRouter>
+        <HashRouter>
           <Routes>
             <Route path="/" element={<Layout />}>
               <Route index element={<FeedPage />} />
@@ -22,7 +22,7 @@ export default function App() {
               <Route path="ride/:id" element={<RidePlannerPage />} />
             </Route>
           </Routes>
-        </BrowserRouter>
+        </HashRouter>
       </APIProvider>
     </AuthProvider>
   );
